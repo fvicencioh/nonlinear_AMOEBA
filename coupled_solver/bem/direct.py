@@ -432,7 +432,7 @@ def get_coulomb_energy(x_q, q, p, p_pol, Q, alpha, ep_in, thole, polar_group, co
 def compute_induced_dipole(xq, q, p, p_pol, Q, alpha, thole, polar_group, \
                            connections_12, pointer_connections_12, \
                            connections_13, pointer_connections_13, \
-                           dphi_reac, E, SOR = 0.7):
+                           dphi_reac, E, SOR = 0.5):
     
     N = len(xq)
     

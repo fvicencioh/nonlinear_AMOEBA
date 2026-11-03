@@ -1,6 +1,6 @@
-Grid_scale = 01.0 
+Grid_scale = 00.5 
 Grid_perfil = 90.0 
-XYZR_FileName = /home/felipevicencio/non-linear_solver/coupled_solver/ExternalSoftware/NanoShaper/meshs/1pgb_solvent/1pgb_solvent.xyzr 
+XYZR_FileName = /home/felipevicencio/nonlinear_AMOEBA/coupled_solver/ExternalSoftware/NanoShaper/meshs/1pgb_solvent/1pgb_solvent.xyzr 
 Build_epsilon_maps = false
 Build_status_map = false
 Save_Mesh_MSMS_Format = true

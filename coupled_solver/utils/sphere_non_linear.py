@@ -8,6 +8,7 @@ import scipy.sparse
 import os
 import math
 import time
+import meshio
 
 from bempp_cl.api.external import fenicsx
 from dolfinx import fem, default_scalar_type
@@ -714,6 +715,7 @@ class Sphere:
         self.dtol = 1e-3
         self.maxiter = 100
 
+        self.simulation = False
         self.ntol = 1e-3 # Tolerancia de Newton-Rapson
         self.wtol = 1e-1 # Tolerancia del factor de relajación
 
@@ -1436,3 +1438,102 @@ class Sphere:
             print(F"Induced dipole residual: {self.dipole_diff}")
 
         self.compute_energy()
+        self.simulation = True
+
+    def export_potential(self, mode="surface", filename=None, ses_mesh=None, inner_marker=1):
+        """
+        mode = "surface": potencial de reacción sobre la SES (triángulos)
+        mode = "solute" : potencial de reacción en el volumen del soluto (tetraedros P2)
+        mode = "volume" : potencial en toda la malla volumétrica (tetraedros P2)
+        """
+        if not self.simulation:
+            raise RuntimeError("First, you need to run the simulation.")
+        if mode not in ("surface", "solute", "volume"):
+            raise ValueError("Mode must be surface, solute or volume")
+        if filename is None:
+            filename = f"potencial_{mode}.vtu"
+
+        if mode == "surface":
+            self._export_potential_surface(filename, ses_mesh)
+        else:
+            self._export_potential_volume(filename, only_solute=(mode == "solute"),
+                                        inner_marker=inner_marker)
+
+
+    def _export_potential_surface(self, filename, ses_mesh=None):
+        mesh = self.mesh
+        V = self.fenics_space
+        ses_nodes = np.asarray(self.ses_nodes, dtype=np.int64)
+
+        # Mapa índice de geometría -> dof de V (P2 con geometría P1)
+        geo_dm = mesh.geometry.dofmap                                    # (ncells, 4)
+        dof_dm = np.asarray(V.dofmap.list).reshape(geo_dm.shape[0], -1)  # (ncells, 10)
+        geo2dof = np.full(mesh.geometry.x.shape[0], -1, dtype=np.int64)
+        geo2dof[geo_dm.ravel()] = dof_dm[:, :4].ravel()
+
+        ses_dofs = geo2dof[ses_nodes]
+        coords = mesh.geometry.x[ses_nodes]                              # (N, 3)
+
+        if not np.allclose(V.tabulate_dof_coordinates()[ses_dofs], coords):
+            raise RuntimeError("El mapa geometría -> dof no es consistente.")
+
+        phi_surf = np.asarray(self.phi_rf_dofs)[ses_dofs]                # (N,)
+
+        if ses_mesh is None:
+            ses_mesh = getattr(self, "ses_mesh", None)
+
+        if ses_mesh is not None:
+            out = meshio.Mesh(
+                points=ses_mesh.vertices.T,
+                cells=[("triangle", ses_mesh.elements.T)],
+                point_data={"phi_reaccion": phi_surf},
+            )
+        else:
+            print("Sin ses_mesh: se exporta solo la nube de puntos de la superficie.")
+            out = meshio.Mesh(
+                points=coords,
+                cells=[("vertex", np.arange(len(coords)).reshape(-1, 1))],
+                point_data={"phi_reaccion": phi_surf},
+            )
+        out.write(filename)
+
+
+    def _export_potential_volume(self, filename, only_solute, inner_marker=1):
+        _P2_TET_TO_VTK = [0, 1, 2, 3, 9, 6, 8, 7, 5, 4]
+        _VTK_EDGES = [(0, 1), (1, 2), (2, 0), (0, 3), (1, 3), (2, 3)]
+        mesh = self.mesh
+        V = self.fenics_space
+        phi = np.asarray(self.phi_rf_dofs)
+        x_all = V.tabulate_dof_coordinates()                             # (ndofs, 3)
+
+        ncells = mesh.geometry.dofmap.shape[0]
+        cell_dofs = np.asarray(V.dofmap.list).reshape(ncells, -1)        # (ncells, 10)
+
+        tags = self.cell_tags
+        if only_solute:
+            cells = tags.indices[tags.values == inner_marker]
+            if not np.isin(np.asarray(self.solute_dofs), cell_dofs[cells].ravel()).all():
+                print("Aviso: hay dofs de self.solute_dofs fuera de las celdas con inner_marker.")
+        else:
+            cells = np.arange(ncells)
+
+        conn = cell_dofs[cells][:, _P2_TET_TO_VTK]                       
+        P = x_all[conn[:1000]]
+        for k, (a, b) in enumerate(_VTK_EDGES):
+            if not np.allclose(P[:, 4 + k], 0.5 * (P[:, a] + P[:, b])):
+                raise RuntimeError("Orden de nodos P2 -> VTK inconsistente.")
+
+        used, inv = np.unique(conn, return_inverse=True)
+        conn_local = inv.reshape(conn.shape)
+
+        region = np.zeros(ncells, dtype=np.int32)
+        region[tags.indices] = tags.values
+
+        name = "phi_react" if only_solute else "phi"
+        out = meshio.Mesh(
+            points=x_all[used],
+            cells=[("tetra10", conn_local)],
+            point_data={name: phi[used]},
+            cell_data={"region": [region[cells]]},
+        )
+        out.write(filename)
